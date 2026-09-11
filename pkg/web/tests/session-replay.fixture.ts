@@ -20,7 +20,7 @@ function buildBrowserBundle(): Promise<string> {
 				write: false,
 				minify: true,
 				rollupOptions: {
-					input: new URL('./session-replay.init.ts', import.meta.url).pathname,
+					input: new URL('./session-replay.init.js', import.meta.url).pathname,
 					output: {
 						format: 'iife',
 					},
