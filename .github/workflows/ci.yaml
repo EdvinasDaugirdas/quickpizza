@@ -3,6 +3,7 @@ on: [pull_request]
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   playwright:
@@ -11,6 +12,7 @@ jobs:
     env:
       GRAFANA_CLOUD_TOKEN: ${{ secrets.GRAFANA_CLOUD_TOKEN }}
       PLAYWRIGHT_SESSION_REPLAY_URL: https://faro-collector-dev-us-east-0.grafana-dev.net/collect/e7e66dde53c893d88d997eba82ebe875
+      PLAYWRIGHT_SESSION_REPLAY_VIEW_URL: https://e2eobservability.grafana-dev.net/a/grafana-sessionreplay-app/app/259/session
       QUICKPIZZA_IMAGE: quickpizza-e2e:${{ github.sha }}
       DEPLOYMENT_ENVIRONMENT: ci
       SERVICE_NAMESPACE: quickpizza-e2e
@@ -44,6 +46,75 @@ jobs:
 
       - name: Run Playwright tests
         run: cd pkg/web && npm run test:e2e
+
+      - name: Add session replays to pull request
+        if: always()
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- playwright-session-replays -->';
+            const outputPath = '/tmp/playwright-session-replays.jsonl';
+            let sessions = [];
+
+            if (fs.existsSync(outputPath)) {
+              sessions = fs
+                .readFileSync(outputPath, 'utf8')
+                .split('\n')
+                .filter(Boolean)
+                .flatMap((line) => {
+                  const result = JSON.parse(line);
+                  return result.sessionIds.map((sessionId) => ({
+                    test: result.test,
+                    project: result.project,
+                    sessionId,
+                  }));
+                });
+            }
+
+            const rows = sessions.map(({ test, project, sessionId }) => {
+              const label = `${test} (${project})`.replaceAll('|', '\\|');
+              const url = `${process.env.PLAYWRIGHT_SESSION_REPLAY_VIEW_URL}/${sessionId}?recording_id=${encodeURIComponent(sessionId)}`;
+              return `| ${label} | [Open replay](${url}) |`;
+            });
+            const details = rows.length > 0
+              ? ['| Test | Session Replay |', '| --- | --- |', ...rows]
+              : ['No Session Replay uploads were captured for this run.'];
+            const body = [
+              marker,
+              '## Playwright Session Replays',
+              '',
+              ...details,
+              '',
+              '> New recordings can take up to five minutes to become available.',
+              '',
+              `[Workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((comment) =>
+              comment.user.type === 'Bot' && comment.body.includes(marker)
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
 
       - name: Flush telemetry
         run: sleep 15

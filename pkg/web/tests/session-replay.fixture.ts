@@ -1,3 +1,4 @@
+import { appendFileSync } from 'node:fs';
 import { test as base, expect } from 'playwright/test';
 import { build } from 'vite';
 
@@ -8,6 +9,9 @@ type BuildOutput = {
 };
 
 const collectorUrl = process.env.PLAYWRIGHT_SESSION_REPLAY_URL;
+const sessionReplayOutput = process.env.CI
+	? '/tmp/playwright-session-replays.jsonl'
+	: undefined;
 
 let browserBundle: Promise<string> | undefined;
 
@@ -63,6 +67,7 @@ export const test = base.extend<{ sessionReplay: undefined }>({
 			};
 			const bundle = await buildBrowserBundle();
 			let successfulUploads = 0;
+			const sessionIds = new Set<string>();
 
 			context.on('response', (response) => {
 				if (
@@ -71,6 +76,10 @@ export const test = base.extend<{ sessionReplay: undefined }>({
 					response.ok()
 				) {
 					successfulUploads += 1;
+					const sessionId = response.request().headers()['x-faro-session-id'];
+					if (sessionId) {
+						sessionIds.add(sessionId);
+					}
 				}
 			});
 
@@ -93,6 +102,16 @@ export const test = base.extend<{ sessionReplay: undefined }>({
 				);
 			} else {
 				console.log(`Session Replay collector uploads: ${successfulUploads}`);
+				if (sessionReplayOutput && sessionIds.size > 0) {
+					appendFileSync(
+						sessionReplayOutput,
+						`${JSON.stringify({
+							test: testInfo.title,
+							project: testInfo.project.name,
+							sessionIds: [...sessionIds],
+						})}\n`,
+					);
+				}
 			}
 		},
 		{ auto: true },
