@@ -18,10 +18,11 @@ services:
       - "4318:4318" # OTLP HTTP
     environment:
       QUICKPIZZA_HOST: quickpizza:3333
-      # must be set with an .env file
+      # Grafana-dev Cloud Access Policy token; the stack is fixed in config.alloy.
       GRAFANA_CLOUD_TOKEN: "${GRAFANA_CLOUD_TOKEN}"
-      GRAFANA_CLOUD_STACK: "${GRAFANA_CLOUD_STACK}"
       DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:-development}
+      QUICKPIZZA_PYROSCOPE_SERVICE_REPOSITORY: "${QUICKPIZZA_PYROSCOPE_SERVICE_REPOSITORY:-https://github.com/grafana/quickpizza}"
+      QUICKPIZZA_PYROSCOPE_SERVICE_GIT_REF: "${QUICKPIZZA_PYROSCOPE_SERVICE_GIT_REF:-refs/heads/main}"
       # Use empty string to disable.
       DB_O11Y_CONNECTION: "${DB_O11Y_CONNECTION-postgres://db-o11y:db-o11y-password@quickpizza-db:5432/quickpizza_db?sslmode=disable}"
       SERVICE_NAMESPACE: "${SERVICE_NAMESPACE:-quickpizza}"

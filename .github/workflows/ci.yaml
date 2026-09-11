@@ -8,26 +8,48 @@ jobs:
   playwright:
     name: QuickPizza browser test
     runs-on: ubuntu-latest
+    env:
+      GRAFANA_CLOUD_TOKEN: ${{ secrets.GRAFANA_CLOUD_TOKEN }}
+      QUICKPIZZA_IMAGE: quickpizza-e2e:${{ github.sha }}
+      DEPLOYMENT_ENVIRONMENT: ci
+      SERVICE_NAMESPACE: quickpizza-e2e
+      QUICKPIZZA_PYROSCOPE_SERVICE_REPOSITORY: https://github.com/${{ github.repository }}
+      QUICKPIZZA_PYROSCOPE_SERVICE_GIT_REF: ${{ github.sha }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - name: Setup Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: pkg/web/package-lock.json
 
-      - name: Build Binary
-        run: make build
+      - name: Install test dependencies
+        run: npm ci --prefix pkg/web
 
-      - name: Start Server
-        run: ./bin/quickpizza &
+      - name: Build application image
+        run: docker build --tag "$QUICKPIZZA_IMAGE" .
+
+      - name: Start instrumented application
+        run: |
+          docker compose -f compose.grafana-cloud.monolithic.yaml up --detach --wait
+          curl --fail --retry 30 --retry-delay 1 --retry-all-errors http://127.0.0.1:3333/ready
 
       - name: Install Playwright browser
         run: cd pkg/web && npx playwright install --with-deps chromium
 
       - name: Run Playwright tests
         run: cd pkg/web && npm run test:e2e
+
+      - name: Flush telemetry
+        run: sleep 15
+
+      - name: Show collector logs on failure
+        if: failure()
+        run: docker compose -f compose.grafana-cloud.monolithic.yaml logs alloy quickpizza
+
+      - name: Stop instrumented application
+        if: always()
+        run: docker compose -f compose.grafana-cloud.monolithic.yaml down --volumes
