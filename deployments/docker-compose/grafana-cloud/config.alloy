@@ -113,9 +113,10 @@ prometheus.scrape "app_containers" {
 }
 // Logs
 loki.source.docker "app_containers" {
-  host       = "unix:///var/run/docker.sock"
-  targets    = discovery.relabel.app_containers.output
-  forward_to = [loki.write.grafana_dev.receiver]
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "5s"
+  targets          = discovery.relabel.app_containers.output
+  forward_to       = [loki.write.grafana_dev.receiver]
 }
 
 discovery.relabel "app_containers_profiles" {

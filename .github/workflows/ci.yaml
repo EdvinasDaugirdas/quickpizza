@@ -36,6 +36,7 @@ jobs:
         run: |
           docker compose -f compose.grafana-cloud.monolithic.yaml up --detach --wait
           curl --fail --retry 30 --retry-delay 1 --retry-all-errors http://127.0.0.1:3333/ready
+          curl --fail --retry 10 --retry-delay 1 --retry-all-errors http://127.0.0.1:12345/-/healthy
 
       - name: Install Playwright browser
         run: cd pkg/web && npx playwright install --with-deps chromium
@@ -46,9 +47,22 @@ jobs:
       - name: Flush telemetry
         run: sleep 15
 
-      - name: Show collector logs on failure
-        if: failure()
-        run: docker compose -f compose.grafana-cloud.monolithic.yaml logs alloy quickpizza
+      - name: Verify logs were exported
+        run: |
+          curl --fail http://127.0.0.1:12345/-/healthy
+          curl --fail --silent --show-error http://127.0.0.1:12345/metrics | awk '
+            /^loki_source_docker_target_entries_total/ { read += $NF }
+            /^loki_write_sent_entries_total/ { sent += $NF }
+            /^loki_write_dropped_entries_total/ { dropped += $NF }
+            END {
+              printf "Loki entries: read=%d sent=%d dropped=%d\n", read, sent, dropped
+              exit !(read > 0 && sent > 0 && dropped == 0)
+            }
+          '
+
+      - name: Show collector logs
+        if: always()
+        run: docker compose -f compose.grafana-cloud.monolithic.yaml logs --no-color alloy quickpizza
 
       - name: Stop instrumented application
         if: always()
