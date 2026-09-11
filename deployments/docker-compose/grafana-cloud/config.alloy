@@ -1,6 +1,6 @@
 
 // Resolve the fixed Grafana-dev stack into its signal-specific endpoints and IDs.
-// The API response also includes otlpHttpUrl, so CI doesn't need an OTLP variable.
+// The OTLP endpoint is derived from its clusterSlug, so CI doesn't need an OTLP variable.
 remote.http "grafana_dev_stack" {
   url            = "https://grafana-dev.com/api/instances/e2eobservability"
   poll_frequency = "24h"
@@ -144,7 +144,7 @@ discovery.relabel "app_containers_profiles" {
 // Profiling Pull Mode
 pyroscope.scrape "app_containers" {
   // https://grafana.com/docs/pyroscope/latest/configure-client/grafana-alloy/go_pull/
-  scrape_interval = "5s"
+  scrape_interval = "15s"
   targets = discovery.relabel.app_containers_profiles.output
   forward_to = [pyroscope.write.grafana_dev.receiver]
 }
@@ -295,7 +295,7 @@ otelcol.auth.basic "otlpEndpoint" {
 
 otelcol.exporter.otlphttp "otlpEndpoint" {
   client {
-    endpoint = json_decode(remote.http.grafana_dev_stack.content)["otlpHttpUrl"] + "/otlp"
+    endpoint = "https://otlp-gateway-" + json_decode(remote.http.grafana_dev_stack.content)["clusterSlug"] + ".grafana-dev.net/otlp"
     // https://github.com/grafana/beyla/blob/069049182455db603f3bda6865e7de13e45e038f/pkg/export/otel/common.go#L22
     auth     = otelcol.auth.basic.otlpEndpoint.handler
   }
