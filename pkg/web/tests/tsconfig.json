@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "..",
+    "paths": {
+      "@playwright/test": ["tests/session-replay.fixture.ts"]
+    }
+  }
+}
