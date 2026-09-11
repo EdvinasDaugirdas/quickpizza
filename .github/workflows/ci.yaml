@@ -1,94 +1,141 @@
-# NOTE:
-# It is important that these actions are run for every PR, no matter what
-# other actions are added. The ones here are testing the actual code pushed
-# instead of a possibly outdated image. Additionally, we also run formatters
-# and linters here.
-# Do not modify this file unless you really need to. You very likely don't need to.
-
-name: CI
-on: [push]
+name: Playwright E2E
+on: [pull_request]
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
-  runner-job:
+  playwright:
+    name: QuickPizza browser test
     runs-on: ubuntu-latest
+    env:
+      GRAFANA_CLOUD_TOKEN: ${{ secrets.GRAFANA_CLOUD_TOKEN }}
+      PLAYWRIGHT_SESSION_REPLAY_URL: https://faro-collector-dev-us-east-0.grafana-dev.net/collect/e7e66dde53c893d88d997eba82ebe875
+      PLAYWRIGHT_SESSION_REPLAY_VIEW_URL: https://e2eobservability.grafana-dev.net/a/grafana-kowalski-app/apps/259/sessions
+      QUICKPIZZA_IMAGE: quickpizza-e2e:${{ github.sha }}
+      DEPLOYMENT_ENVIRONMENT: ci
+      SERVICE_NAMESPACE: quickpizza-e2e
+      QUICKPIZZA_PYROSCOPE_SERVICE_REPOSITORY: https://github.com/${{ github.repository }}
+      QUICKPIZZA_PYROSCOPE_SERVICE_GIT_REF: ${{ github.sha }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - name: Setup Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-
-      - name: Setup Goimports
-        run: go install golang.org/x/tools/cmd/goimports@latest
-
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: pkg/web/package-lock.json
 
-      - name: Check Formatting (Go)
-        run: make format-check
+      - name: Install test dependencies
+        run: npm ci --prefix pkg/web
 
-      - name: Build Binary
-        run: make build
+      - name: Build application image
+        run: docker build --tag "$QUICKPIZZA_IMAGE" .
 
-      - name: Run Biome Checks
-        run: cd pkg/web && npm run biome-check
+      - name: Start instrumented application
+        run: |
+          docker compose -f compose.grafana-cloud.monolithic.yaml up --detach --wait
+          curl --fail --retry 30 --retry-delay 1 --retry-all-errors http://127.0.0.1:3333/ready
+          curl --fail --retry 10 --retry-delay 1 --retry-all-errors http://127.0.0.1:12345/-/healthy
 
-      - name: Start Server
-        # Use enable these features in our own deployment, so we might as well
-        # "enable" them during testing as well to simulate a more realistic setup.
-        env:
-          QUICKPIZZA_OTLP_ENDPOINT: "http://localhost"
-          QUICKPIZZA_TRUST_CLIENT_TRACEID: "1"
-          QUICKPIZZA_PYROSCOPE_ENDPOINT: "http://localhost"
-        run: ./bin/quickpizza &
+      - name: Install Playwright browser
+        run: cd pkg/web && npx playwright install --with-deps chromium
 
-      - name: Setup k6
-        uses: grafana/setup-k6-action@db07bd9765aac508ef18982e52ab937fe633a065 # v1.2.1
+      - name: Run Playwright tests
+        run: cd pkg/web && npm run test:e2e
+
+      - name: Add session replays to pull request
+        if: always()
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
-          browser: true
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- playwright-session-replays -->';
+            const outputPath = '/tmp/playwright-session-replays.jsonl';
+            let sessions = [];
 
-      - name: Install jq
-        uses: dcarbone/install-jq-action@e397bd87438d72198f81efd21f876461183d383a # v3.0.1
+            if (fs.existsSync(outputPath)) {
+              sessions = fs
+                .readFileSync(outputPath, 'utf8')
+                .split('\n')
+                .filter(Boolean)
+                .flatMap((line) => {
+                  const result = JSON.parse(line);
+                  return result.sessionIds.map((sessionId) => ({
+                    test: result.test,
+                    project: result.project,
+                    sessionId,
+                  }));
+                });
+            }
 
-      - name: Run k6 foundations tests
-        run: ./k6/run-tests.sh -t **/k6/foundations/*.js -u http://localhost:3333
+            const rows = sessions.map(({ test, project, sessionId }) => {
+              const label = `${test} (${project})`.replaceAll('|', '\\|');
+              const url = `${process.env.PLAYWRIGHT_SESSION_REPLAY_VIEW_URL}/${sessionId}`;
+              return `| ${label} | [Open replay](${url}) |`;
+            });
+            const details = rows.length > 0
+              ? ['| Test | Session Replay |', '| --- | --- |', ...rows]
+              : ['No Session Replay uploads were captured for this run.'];
+            const body = [
+              marker,
+              '## Playwright Session Replays',
+              '',
+              ...details,
+              '',
+              '> New recordings can take up to five minutes to become available.',
+              '',
+              `[Workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+            ].join('\n');
 
-      - name: Run k6 foundations TS tests
-        run: ./k6/run-tests.sh -t **/k6/foundations/*.ts -u http://localhost:3333
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((comment) =>
+              comment.user.type === 'Bot' && comment.body.includes(marker)
+            );
 
-      - name: Run k6 internal tests
-        run: ./k6/run-tests.sh -t **/k6/internal/*.js -u http://localhost:3333
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
 
-      - name: Install Google Chrome (browser tests)
+      - name: Flush telemetry
+        run: sleep 15
+
+      - name: Verify logs were exported
         run: |
-          set -eux
-          sudo apt-get update
-          sudo apt-get install -y wget
-          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor --yes -o /usr/share/keyrings/google-chrome.gpg
-          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
+          curl --fail http://127.0.0.1:12345/-/healthy
+          curl --fail --silent --show-error http://127.0.0.1:12345/metrics | awk '
+            /^loki_source_docker_target_entries_total/ { read += $NF }
+            /^loki_write_sent_entries_total/ { sent += $NF }
+            /^loki_write_dropped_entries_total/ { dropped += $NF }
+            END {
+              printf "Loki entries: read=%d sent=%d dropped=%d\n", read, sent, dropped
+              exit !(read > 0 && sent > 0 && dropped == 0)
+            }
+          '
 
-      - name: Run k6 browser tests
-        run: ./k6/run-tests.sh -t **/k6/browser/*.js -u http://localhost:3333
+      - name: Show collector logs
+        if: always()
+        run: docker compose -f compose.grafana-cloud.monolithic.yaml logs --no-color alloy quickpizza
 
-      - name: Install xk6
-        run: go install go.k6.io/xk6/cmd/xk6@latest
-
-      - name: Build custom k6 binary with quickpizzaext
-        run: |
-          xk6 build \
-            --output k6/extensions/k6 \
-            --with github.com/grafana/quickpizza/extensions/quickpizzaext=./k6/extensions/quickpizzaext \
-            --replace github.com/grafana/quickpizza=.
-
-      - name: Run k6 extension tests
-        run: ./k6/extensions/k6 run k6/extensions/01.quickpizzaext.js
-
-      - name: Stop Server
-        run: pkill -9 quickpizza
+      - name: Stop instrumented application
+        if: always()
+        run: docker compose -f compose.grafana-cloud.monolithic.yaml down --volumes

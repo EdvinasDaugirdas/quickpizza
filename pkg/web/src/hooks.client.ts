@@ -21,6 +21,7 @@ function setupFaro() {
 
 			if (!url) {
 				console.warn('Grafana Faro is not configured.');
+				return;
 			}
 
 			const instrumentations = [

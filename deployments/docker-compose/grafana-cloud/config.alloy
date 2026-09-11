@@ -1,14 +1,35 @@
 
-import.git "grafana_cloud" {
-  repository = "https://github.com/grafana/alloy-modules.git"
-  revision = "main"
-  path = "modules/cloud/grafana/cloud/module.alloy"
-  pull_frequency = "0s"
+// Resolve the fixed Grafana-dev stack into its signal-specific endpoints and IDs.
+// The OTLP endpoint is derived from its clusterSlug, so CI doesn't need an OTLP variable.
+remote.http "grafana_dev_stack" {
+  url            = "https://grafana-dev.com/api/instances/e2eobservability"
+  poll_frequency = "24h"
+
+  client {
+    bearer_token = env("GRAFANA_CLOUD_TOKEN")
+  }
 }
 
-grafana_cloud.stack "receivers" {
-  stack_name = env("GRAFANA_CLOUD_STACK")
-  token = env("GRAFANA_CLOUD_TOKEN")
+loki.write "grafana_dev" {
+  endpoint {
+    url = json_decode(remote.http.grafana_dev_stack.content)["hlInstanceUrl"] + "/loki/api/v1/push"
+
+    basic_auth {
+      username = json_decode(remote.http.grafana_dev_stack.content)["hlInstanceId"]
+      password = env("GRAFANA_CLOUD_TOKEN")
+    }
+  }
+}
+
+pyroscope.write "grafana_dev" {
+  endpoint {
+    url = json_decode(remote.http.grafana_dev_stack.content)["hpInstanceUrl"]
+
+    basic_auth {
+      username = json_decode(remote.http.grafana_dev_stack.content)["hpInstanceId"]
+      password = env("GRAFANA_CLOUD_TOKEN")
+    }
+  }
 }
 
 discovery.docker "all_containers" {
@@ -72,12 +93,12 @@ discovery.relabel "app_containers" {
 }
 
 // Use explicit remote_write to enable native histograms
-// (grafana_cloud.stack.receivers.metrics doesn't support send_native_histograms )
+// Keep native histograms enabled for the Prometheus remote-write path.
 prometheus.remote_write "grafana_cloud" {
   endpoint {
-    url = grafana_cloud.stack.receivers.info["hmInstancePromUrl"] + "/api/prom/push"
+    url = json_decode(remote.http.grafana_dev_stack.content)["hmInstancePromUrl"] + "/api/prom/push"
     basic_auth {
-      username = grafana_cloud.stack.receivers.info["hmInstancePromId"]
+      username = json_decode(remote.http.grafana_dev_stack.content)["hmInstancePromId"]
       password = env("GRAFANA_CLOUD_TOKEN")
     }
     send_native_histograms = true
@@ -92,9 +113,10 @@ prometheus.scrape "app_containers" {
 }
 // Logs
 loki.source.docker "app_containers" {
-  host       = "unix:///var/run/docker.sock"
-  targets    = discovery.relabel.app_containers.output
-  forward_to = [grafana_cloud.stack.receivers.logs]
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "5s"
+  targets          = discovery.relabel.app_containers.output
+  forward_to       = [loki.write.grafana_dev.receiver]
 }
 
 discovery.relabel "app_containers_profiles" {
@@ -122,9 +144,9 @@ discovery.relabel "app_containers_profiles" {
 // Profiling Pull Mode
 pyroscope.scrape "app_containers" {
   // https://grafana.com/docs/pyroscope/latest/configure-client/grafana-alloy/go_pull/
-  scrape_interval = "30s"
+  scrape_interval = "15s"
   targets = discovery.relabel.app_containers_profiles.output
-  forward_to = [grafana_cloud.stack.receivers.profiles]
+  forward_to = [pyroscope.write.grafana_dev.receiver]
 }
 
 // Traces
@@ -267,14 +289,13 @@ otelcol.processor.batch "default" {
 
 otelcol.auth.basic "otlpEndpoint" {
   // Grafana Cloud Instance ID.
-  username = grafana_cloud.stack.receivers.info["id"]
+  username = json_decode(remote.http.grafana_dev_stack.content)["id"]
   password = env("GRAFANA_CLOUD_TOKEN")
 }
 
 otelcol.exporter.otlphttp "otlpEndpoint" {
   client {
-    // FR:  gcom API to return the Grafana Cloud OTLP endpoint 
-    endpoint = "https://otlp-gateway-"+ grafana_cloud.stack.receivers.info["clusterSlug"] + ".grafana.net/otlp"
+    endpoint = "https://otlp-gateway-" + json_decode(remote.http.grafana_dev_stack.content)["clusterSlug"] + ".grafana-dev.net/otlp"
     // https://github.com/grafana/beyla/blob/069049182455db603f3bda6865e7de13e45e038f/pkg/export/otel/common.go#L22
     auth     = otelcol.auth.basic.otlpEndpoint.handler
   }
@@ -330,7 +351,7 @@ database_observability.postgres "postgres_quickpizza" {
 }
 
 loki.relabel "database_observability_postgres_quickpizza" {
-  forward_to = [grafana_cloud.stack.receivers.logs]
+  forward_to = [loki.write.grafana_dev.receiver]
 
   rule {
     target_label = "job"
