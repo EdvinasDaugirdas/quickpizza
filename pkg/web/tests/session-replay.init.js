@@ -8,6 +8,8 @@ const config = globalThis.__PLAYWRIGHT_SESSION_REPLAY_CONFIG__;
 if (config && window.location.href !== 'about:blank') {
 	initializeFaro({
 		url: config.url,
+		isolate: true,
+		preventGlobalExposure: true,
 		app: {
 			name: config.appName,
 			version: config.appVersion,
@@ -19,7 +21,15 @@ if (config && window.location.href !== 'about:blank') {
 		},
 		instrumentations: [
 			...getWebInstrumentations(),
-			new ReplayInstrumentation({ samplingRate: 1 }),
+			new ReplayInstrumentation({
+				samplingRate: 1,
+				maskAllInputs: false,
+				maskInputOptions: {},
+				maskTextSelector: undefined,
+				inlineStylesheet: true,
+				inlineImages: true,
+				collectFonts: true,
+			}),
 		],
 	});
 }
