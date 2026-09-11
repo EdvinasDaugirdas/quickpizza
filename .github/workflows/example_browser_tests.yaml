@@ -3,7 +3,7 @@
 # the real CI pipeline. See ci.yaml for the authoritative
 # test workflow.
 name: Example Browser Tests Workflow
-on: [push]
+on: [workflow_dispatch]
 
 permissions:
   contents: read
