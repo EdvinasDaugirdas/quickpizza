@@ -3,9 +3,9 @@ import { getWebInstrumentations, initializeFaro } from '@grafana/faro-web-sdk';
 
 const config = globalThis.__PLAYWRIGHT_SESSION_REPLAY_CONFIG__;
 
-// Playwright also evaluates init scripts in the initial empty document. Starting
-// rrweb there can crash the target before the first real navigation.
-if (config && window.location.href !== 'about:blank') {
+// Init scripts also run in empty/internal documents. Only start Faro for real
+// web documents; rrweb must not initialize in the browser's initial blank page.
+if (config && /^https?:$/.test(window.location.protocol)) {
 	initializeFaro({
 		url: config.url,
 		isolate: true,
