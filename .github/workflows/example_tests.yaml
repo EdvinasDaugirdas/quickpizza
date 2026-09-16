@@ -2,7 +2,7 @@
 # grafana/run-k6-action GitHub Actions. It is not part of the real CI pipeline.
 # See ci.yaml for the authoritative test workflow.
 name: Example Tests Workflow
-on: [push]
+on: [workflow_dispatch]
 
 permissions:
   contents: read
